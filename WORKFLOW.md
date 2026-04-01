@@ -1,6 +1,20 @@
 ---
 tracker:
-  repo: rauriemo/forge
+  kind: github
+  repo: "rauriemo/forge"
+  labels:
+    active: ["todo", "in-progress"]
+    terminal: ["done", "canceled"]
+
+polling:
+  interval_ms: 10000
+
+workspace:
+  root: "./workspaces"
+
+hooks:
+  after_create: "git clone {{issue.repo_url}} ."
+  before_run: "git pull origin main"
 
 channels:
   - kind: dispatch
