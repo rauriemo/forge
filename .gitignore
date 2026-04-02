@@ -1,5 +1,6 @@
 workspaces/
 .env
+settings.json
 __pycache__/
 .venv/
 *.log

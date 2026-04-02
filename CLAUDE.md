@@ -45,6 +45,7 @@ Forge operates within a system of three products:
 | `tests/test_forge.py` | Unit tests for every public function in forge.py |
 | `tests/conftest.py` | Shared fixtures (sample agents.yaml content, temp directories) |
 | `WORKFLOW.md` | Anthem config for Forge itself: tracker, hooks, allowed_tools, constraints, prompt template |
+| `settings.json` | Persistent forge preferences (repo visibility). Auto-created on first toggle. |
 | `CLAUDE.md` | This file. Architecture doc for Claude Code context. |
 | `docs/plan.md` | Full implementation plan (source of truth for what to build) |
 | `pyproject.toml` | pytest + ruff configuration |
@@ -101,10 +102,9 @@ def add_agent_to_dispatch(
     token_env: str,
     voice: str,
     fallback_voice: str,
-    wake_phrase: str,
 ) -> None
 ```
-Reads `agents.yaml`, adds a new agent entry under `agents:` with `type: anthem`, `wake_phrase`, `endpoint: ws://localhost:{port}`, `token_env`, `voice`, `fallback_voice`. Writes back. Idempotent: if agent `name` already exists, does nothing.
+Reads `agents.yaml`, adds a new agent entry under `agents:` with `type: anthem`, `wake_word: assets/hey-{name}.ppn`, `endpoint: ws://localhost:{port}`, `token_env`, `voice`, `fallback_voice`. Writes back. Idempotent: if agent `name` already exists, does nothing.
 
 ```python
 def add_token_to_env(env_path: str, key: str, value: str) -> None
@@ -112,9 +112,43 @@ def add_token_to_env(env_path: str, key: str, value: str) -> None
 Appends `KEY=value` to the `.env` file. Creates the file if missing. Skips if key already exists.
 
 ```python
-def add_token_to_channels_yaml(channels_yaml_path: str, name: str, token: str) -> None
+def get_dispatch_token(channels_yaml_path: str) -> str
 ```
-Reads `channels.yaml`, adds `name: { token: "..." }` entry. Preserves existing entries. Creates file with just the new entry if missing.
+Reads the shared `dispatch.token` from `~/.anthem/channels.yaml`. All Anthem instances share this single token. Raises `FileNotFoundError` if missing, `ValueError` if token is empty.
+
+### Settings
+
+```python
+SETTINGS_PATH = Path(__file__).parent / "settings.json"
+```
+Path to the JSON settings file. Lives alongside `forge.py` in the project root.
+
+```python
+def load_settings() -> dict
+```
+Reads `settings.json`. Returns `{"repo_visibility": "public"}` if the file doesn't exist.
+
+```python
+def save_settings(settings: dict) -> None
+```
+Writes settings dict to `settings.json`.
+
+```python
+def set_repo_visibility(visibility: str) -> dict
+```
+Sets `repo_visibility` to `"public"` or `"private"`. Raises `ValueError` on invalid input. Returns the updated settings dict. This is a toggle -- the most recent call wins for all future scaffolds.
+
+### GitHub Repo Creation
+
+```python
+GITHUB_ORG = "rauriemo"
+```
+The GitHub org/user under which new repos are created.
+
+```python
+def create_github_repo(project_dir: str, name: str, private: bool = False) -> str
+```
+Runs `git add .`, `git commit`, and `gh repo create rauriemo/{name} --public/--private --source=. --push`. Returns the repo URL. Called automatically at the end of `scaffold_project`.
 
 ### Scaffold
 
@@ -132,12 +166,13 @@ Full scaffolding pipeline:
 3. Runs `git init` (or `git clone repo_url .` if provided)
 4. Runs `anthem init`
 5. Reads Dispatch's `agents.yaml` to allocate port and voice
-6. Generates a token
+6. Reads shared dispatch token from `~/.anthem/channels.yaml`
 7. Writes WORKFLOW.md with project-specific config
 8. Writes .gitignore
 9. Adds agent to Dispatch's `agents.yaml`
 10. Adds token to Dispatch's `.env`
-11. Adds token to `~/.anthem/channels.yaml`
+11. Reads `settings.json` for repo visibility preference
+12. Runs `git add .`, `git commit`, `gh repo create` (creates remote + pushes)
 
 Returns a dict:
 ```python
@@ -148,6 +183,7 @@ Returns a dict:
     "fallback_voice": "en-US-GuyNeural",
     "wake_phrase": "hey rpg",
     "token_env": "RPG_ANTHEM_TOKEN",
+    "repo": "https://github.com/rauriemo/rpg",
 }
 ```
 
@@ -225,8 +261,10 @@ Test classes (one per concern):
 | `TestTokenGeneration` | `generate_token` |
 | `TestYamlEditing` | `add_agent_to_dispatch` |
 | `TestEnvEditing` | `add_token_to_env` |
-| `TestChannelsYaml` | `add_token_to_channels_yaml` |
-| `TestScaffold` | `scaffold_project` |
+| `TestGetDispatchToken` | `get_dispatch_token` |
+| `TestSettings` | `load_settings`, `save_settings`, `set_repo_visibility` |
+| `TestCreateGithubRepo` | `create_github_repo` |
+| `TestScaffold` | `scaffold_project` (including visibility toggle integration) |
 | `TestValidation` | `validate_project_name`, `validate_port_free` |
 
 ## Coding Standards
@@ -241,9 +279,20 @@ Test classes (one per concern):
 ## What Forge Does NOT Do (for now)
 
 - **Does not run `anthem run`** on the new project. The user starts it manually.
-- **Does not create GitHub repos**. It runs `git init` locally. `gh repo create` can be added later.
 - **Does not manage Picovoice wake words**. New projects use STT wake phrase matching only.
 - **Does not have its own server**. The Anthem daemon IS the runtime. `forge.py` is invoked by executor agents.
+
+## CLI Subcommands
+
+```
+python forge.py scaffold --name <name> --base-path <path> [--repo-url <url>] [--tech-stack <stack>]
+```
+Runs the full scaffolding pipeline. Prints JSON result on success.
+
+```
+python forge.py set-visibility --value public|private
+```
+Toggles default GitHub repo visibility for future scaffolds. Prints updated settings JSON.
 
 ## Anthem WORKFLOW.md Contract
 
@@ -269,4 +318,4 @@ Events:   {"type":"event","event":"task.completed","text":"..."}
 
 The token lives in two places:
 - Client-side: Dispatch's `.env` as `FORGE_ANTHEM_TOKEN` (AnthemAgent reads it)
-- Server-side: `~/.anthem/channels.yaml` under `forge.token` (Anthem's Dispatch adapter verifies it)
+- Server-side: `~/.anthem/channels.yaml` under `dispatch.token` (shared by all Anthem instances)

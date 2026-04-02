@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import argparse
+import json
 import logging
 import re
 import secrets
 import subprocess
+import sys
 from pathlib import Path
 
 import yaml
@@ -13,6 +16,8 @@ import yaml
 logger = logging.getLogger(__name__)
 
 DISPATCH_PATH = r"C:\Users\I9 Ultra\Dispatch"
+SETTINGS_PATH = Path(__file__).parent / "settings.json"
+GITHUB_ORG = "rauriemo"
 
 VOICE_POOL: list[tuple[str, str]] = [
     ("google/en-US-Chirp3-HD-Puck", "en-US-GuyNeural"),
@@ -104,9 +109,13 @@ def add_agent_to_dispatch(
     token_env: str,
     voice: str,
     fallback_voice: str,
-    wake_phrase: str,
 ) -> None:
-    """Add a new agent entry to Dispatch's agents.yaml. Idempotent."""
+    """Add a new agent entry to Dispatch's agents.yaml. Idempotent.
+
+    New agents use STT-based wake phrase detection (derived from the agent name)
+    rather than Picovoice .ppn files. Dispatch falls back to the STT pipeline
+    when the .ppn file doesn't exist, deriving the phrase from the filename.
+    """
     path = Path(agents_yaml_path)
     data = yaml.safe_load(path.read_text(encoding="utf-8"))
     if name in data.get("agents", {}):
@@ -114,7 +123,7 @@ def add_agent_to_dispatch(
         return
     data.setdefault("agents", {})[name] = {
         "type": "anthem",
-        "wake_phrase": wake_phrase,
+        "wake_word": f"assets/hey-{name}.ppn",
         "endpoint": f"ws://localhost:{port}",
         "token_env": token_env,
         "voice": voice,
@@ -138,15 +147,78 @@ def add_token_to_env(env_path: str, key: str, value: str) -> None:
     path.write_text(content + suffix + f"{key}={value}\n", encoding="utf-8")
 
 
-def add_token_to_channels_yaml(channels_yaml_path: str, name: str, token: str) -> None:
-    """Add a name: {token: ...} entry to channels.yaml. Create if missing."""
+def get_dispatch_token(channels_yaml_path: str) -> str:
+    """Read the shared dispatch token from channels.yaml.
+
+    All Anthem instances share a single ``dispatch.token`` entry. Anthem's
+    ``ChannelsConfig`` struct only has ``dispatch`` and ``slack`` fields, so
+    per-project keys are ignored.
+    """
     path = Path(channels_yaml_path)
-    data = yaml.safe_load(path.read_text(encoding="utf-8")) or {} if path.exists() else {}
-    if name in data:
-        logger.debug("Entry %s already exists in channels.yaml, skipping", name)
-        return
-    data[name] = {"token": token}
-    path.write_text(yaml.dump(data, default_flow_style=False, sort_keys=False), encoding="utf-8")
+    if not path.exists():
+        raise FileNotFoundError(f"channels.yaml not found at {channels_yaml_path}")
+    data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    dispatch = data.get("dispatch", {})
+    token = dispatch.get("token", "")
+    if not token:
+        raise ValueError("No dispatch.token found in channels.yaml")
+    return token
+
+
+# ---------------------------------------------------------------------------
+# Settings
+# ---------------------------------------------------------------------------
+
+
+def load_settings() -> dict:
+    """Load forge settings from settings.json. Returns defaults if missing."""
+    if SETTINGS_PATH.exists():
+        return json.loads(SETTINGS_PATH.read_text(encoding="utf-8"))
+    return {"repo_visibility": "public"}
+
+
+def save_settings(settings: dict) -> None:
+    """Persist forge settings to settings.json."""
+    SETTINGS_PATH.write_text(json.dumps(settings, indent=2) + "\n", encoding="utf-8")
+
+
+def set_repo_visibility(visibility: str) -> dict:
+    """Toggle default repo visibility. Returns updated settings."""
+    if visibility not in ("public", "private"):
+        raise ValueError(f"Invalid visibility: {visibility!r} (must be 'public' or 'private')")
+    settings = load_settings()
+    settings["repo_visibility"] = visibility
+    save_settings(settings)
+    logger.info("Repo visibility set to %s", visibility)
+    return settings
+
+
+# ---------------------------------------------------------------------------
+# GitHub repo creation
+# ---------------------------------------------------------------------------
+
+
+def create_github_repo(project_dir: str, name: str, private: bool = False) -> str:
+    """Create a GitHub repo under GITHUB_ORG, commit local files, and push.
+
+    Uses ``gh repo create`` which sets the remote and pushes in one step.
+    Returns the repo URL.
+    """
+    visibility = "--private" if private else "--public"
+    cwd = str(project_dir)
+
+    subprocess.run(["git", "add", "."], cwd=cwd, check=True)
+    subprocess.run(
+        ["git", "commit", "-m", f"Initial scaffold for {name}"],
+        cwd=cwd,
+        check=True,
+    )
+    subprocess.run(
+        ["gh", "repo", "create", f"{GITHUB_ORG}/{name}", visibility, "--source=.", "--push"],
+        cwd=cwd,
+        check=True,
+    )
+    return f"https://github.com/{GITHUB_ORG}/{name}"
 
 
 # ---------------------------------------------------------------------------
@@ -177,9 +249,25 @@ def validate_port_free(port: int, agents_yaml_path: str) -> bool:
 # ---------------------------------------------------------------------------
 
 WORKFLOW_TEMPLATE = """\
+---
+tracker:
+  kind: github
+  repo: "{repo}"
+  labels:
+    active: ["todo", "in-progress"]
+    terminal: ["done", "canceled"]
+
+polling:
+  interval_ms: 10000
+
+workspace:
+  root: "./workspaces"
+
+hooks: {{}}
+
 channels:
   - kind: dispatch
-    target: "localhost:{{{{port}}}}"
+    target: "localhost:{port}"
     events: [task.completed, task.failed]
 
 agent:
@@ -195,6 +283,16 @@ system:
 
 server:
   port: 0
+---
+
+You are an expert software engineer working on {{{{.issue.title}}}}.
+
+## Task
+{{{{.issue.body}}}}
+
+## Rules
+- Make small, focused commits
+- Run tests before marking a task as done
 """
 
 GITIGNORE_CONTENT = """\
@@ -206,14 +304,15 @@ __pycache__/
 .claude/
 .cursor/
 .pytest_cache/
+settings.json
 """
 
 
 def scaffold_project(
     base_path: str,
     name: str,
-    repo_url: str | None,
-    tech_stack: str,
+    repo_url: str | None = None,
+    tech_stack: str = "general",
 ) -> dict:
     """Full scaffolding pipeline. Returns a summary dict."""
     sanitized = validate_project_name(name)
@@ -233,11 +332,12 @@ def scaffold_project(
 
     port = next_available_port(agents_yaml_path)
     primary_voice, fallback_voice = allocate_voice(agents_yaml_path)
-    token = generate_token()
-    wake_phrase = f"hey {sanitized}"
     token_env = f"{sanitized.upper().replace('-', '_')}_ANTHEM_TOKEN"
 
-    workflow_content = WORKFLOW_TEMPLATE.replace("{{port}}", str(port))
+    shared_token = get_dispatch_token(channels_yaml_path)
+
+    repo_full = f"{GITHUB_ORG}/{sanitized}"
+    workflow_content = WORKFLOW_TEMPLATE.format(port=port, repo=repo_full)
     (project_dir / "WORKFLOW.md").write_text(workflow_content, encoding="utf-8")
     (project_dir / ".gitignore").write_text(GITIGNORE_CONTENT, encoding="utf-8")
 
@@ -248,11 +348,14 @@ def scaffold_project(
         token_env=token_env,
         voice=primary_voice,
         fallback_voice=fallback_voice,
-        wake_phrase=wake_phrase,
     )
-    add_token_to_env(env_path, token_env, token)
-    add_token_to_channels_yaml(channels_yaml_path, sanitized, token)
+    add_token_to_env(env_path, token_env, shared_token)
 
+    settings = load_settings()
+    private = settings.get("repo_visibility", "public") == "private"
+    repo_url_created = create_github_repo(str(project_dir), sanitized, private=private)
+
+    wake_phrase = f"hey {sanitized}"
     logger.info("Scaffolded project %s at %s", sanitized, project_dir)
 
     return {
@@ -262,4 +365,69 @@ def scaffold_project(
         "fallback_voice": fallback_voice,
         "wake_phrase": wake_phrase,
         "token_env": token_env,
+        "repo": repo_url_created,
     }
+
+
+# ---------------------------------------------------------------------------
+# CLI entrypoint
+# ---------------------------------------------------------------------------
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Forge project scaffolding tool")
+    sub = parser.add_subparsers(dest="command")
+
+    scaffold_cmd = sub.add_parser("scaffold", help="Scaffold a new Anthem project")
+    scaffold_cmd.add_argument("--name", required=True, help="Project name")
+    scaffold_cmd.add_argument(
+        "--base-path",
+        required=True,
+        help="Parent directory for the project",
+    )
+    scaffold_cmd.add_argument(
+        "--repo-url",
+        default=None,
+        help="Git repo URL to clone",
+    )
+    scaffold_cmd.add_argument(
+        "--tech-stack",
+        default="general",
+        help="Tech stack hint",
+    )
+
+    vis_cmd = sub.add_parser(
+        "set-visibility",
+        help="Set default repo visibility (public/private)",
+    )
+    vis_cmd.add_argument(
+        "--value",
+        required=True,
+        choices=["public", "private"],
+        help="Repo visibility for future scaffolds",
+    )
+
+    args = parser.parse_args()
+
+    if args.command is None:
+        parser.print_help()
+        sys.exit(1)
+
+    logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
+
+    if args.command == "scaffold":
+        result = scaffold_project(
+            base_path=args.base_path,
+            name=args.name,
+            repo_url=args.repo_url,
+            tech_stack=args.tech_stack,
+        )
+        print(json.dumps(result, indent=2))
+
+    elif args.command == "set-visibility":
+        result = set_repo_visibility(args.value)
+        print(json.dumps(result, indent=2))
+
+
+if __name__ == "__main__":
+    main()

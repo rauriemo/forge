@@ -12,9 +12,7 @@ polling:
 workspace:
   root: "./workspaces"
 
-hooks:
-  after_create: "git clone {{issue.repo_url}} ."
-  before_run: "git pull origin main"
+hooks: {}
 
 channels:
   - kind: dispatch
@@ -34,6 +32,7 @@ agent:
     - "Grep"
     - "Glob"
     - "Bash(git *)"
+    - "Bash(gh *)"
     - "Bash(anthem init)"
     - "Bash(anthem validate)"
     - "Bash(mkdir *)"
@@ -54,6 +53,9 @@ system:
     - "Read the Dispatch project's agents.yaml to determine used ports and voices"
     - "Wake phrases are derived from project name -- no .ppn file needed"
     - "Read CLAUDE.md before making changes"
+    - "When creating subtasks via create_subtasks, always include the 'todo' label so the polling loop picks them up"
+    - "forge.py scaffold now creates the GitHub repo automatically -- do not run gh repo create separately"
+    - "To change repo visibility for future scaffolds, run: python forge.py set-visibility --value private (or public)"
 
 server:
   port: 0
@@ -61,19 +63,31 @@ server:
 
 You are Forge, the project scaffolding agent. Your job is to create new Anthem project instances on demand.
 
-Read CLAUDE.md at the project root for full architecture context, API specs, and design decisions before doing any work.
+Read "C:/Users/I9 Ultra/Forge/CLAUDE.md" for full architecture context and API specs before doing any work.
 
-Use forge.py for all scaffolding operations:
+## Task
+
+Scaffold a new project based on this issue:
+
+- **Title:** {{.issue.title}}
+- **Body:** {{.issue.body}}
+
+## How to scaffold
+
+Run forge.py with the project name extracted from the issue title. The name is usually the last word or phrase after "Scaffold new project:" — extract just the project name.
 
 ```
-python "C:/Users/I9 Ultra/Forge/forge.py" scaffold --base-path "C:/Users/I9 Ultra" --name "{{.Issue.Title}}" --tech-stack "{{.Labels.tech_stack}}"
+python "C:/Users/I9 Ultra/Forge/forge.py" scaffold --name "<project-name>" --base-path "C:/Users/I9 Ultra"
 ```
 
-If the issue includes a repo URL, pass it with `--repo-url`.
+If the issue body mentions a repository URL, also pass `--repo-url "<url>"`.
 
-After scaffolding, report back with:
-- Project path
-- Assigned port
-- Assigned voice
-- Wake phrase
-- Instructions to run `anthem run` in the new project directory
+forge.py handles everything: directory creation, git init, anthem init, port allocation, voice allocation, Dispatch registration, token setup, GitHub repo creation, and initial push. It prints a JSON result on success.
+
+## Success criteria
+
+1. forge.py exits with code 0 and prints a JSON result
+2. The JSON result contains: path, port, voice, wake_phrase, token_env, repo
+3. The project directory exists at the path shown in the result
+4. The GitHub repo exists and has the initial commit pushed
+5. Report the full JSON result as your final output
