@@ -417,7 +417,9 @@ def scaffold_project(
 
     repo_full = f"{GITHUB_ORG}/{sanitized}"
     workflow_content = WORKFLOW_TEMPLATE.format(
-        port=port, prism_port=prism_port, repo=repo_full,
+        port=port,
+        prism_port=prism_port,
+        repo=repo_full,
     )
     (project_dir / "WORKFLOW.md").write_text(workflow_content, encoding="utf-8")
     (project_dir / ".gitignore").write_text(GITIGNORE_CONTENT, encoding="utf-8")
