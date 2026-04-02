@@ -177,6 +177,33 @@ class TestGetDispatchToken:
             forge.get_dispatch_token(str(path))
 
 
+class TestGetPrismToken:
+    def test_reads_existing_token(self, tmp_path):
+        path = tmp_path / "channels.yaml"
+        path.write_text("prism:\n  token: prism-secret-456\n", encoding="utf-8")
+        assert forge.get_prism_token(str(path)) == "prism-secret-456"
+
+    def test_generates_token_if_missing(self, tmp_path):
+        path = tmp_path / "channels.yaml"
+        path.write_text("dispatch:\n  token: abc\n", encoding="utf-8")
+        token = forge.get_prism_token(str(path))
+        assert len(token) == 64  # 32 bytes = 64 hex chars
+        data = yaml.safe_load(path.read_text(encoding="utf-8"))
+        assert data["prism"]["token"] == token
+
+    def test_missing_file_raises(self, tmp_path):
+        path = tmp_path / "channels.yaml"
+        with pytest.raises(FileNotFoundError):
+            forge.get_prism_token(str(path))
+
+    def test_idempotent_on_second_call(self, tmp_path):
+        path = tmp_path / "channels.yaml"
+        path.write_text("dispatch:\n  token: abc\n", encoding="utf-8")
+        token1 = forge.get_prism_token(str(path))
+        token2 = forge.get_prism_token(str(path))
+        assert token1 == token2
+
+
 class TestSettings:
     def test_defaults_when_no_file(self, tmp_path, monkeypatch):
         monkeypatch.setattr(forge, "SETTINGS_PATH", tmp_path / "settings.json")
@@ -277,14 +304,19 @@ class TestCreateGithubRepo:
 
 class TestScaffold:
     def _setup_scaffold_env(self, tmp_path, monkeypatch, agents_yaml_file):
-        """Common setup: mock DISPATCH_PATH, channels.yaml, settings, and subprocess."""
+        """Common setup: mock DISPATCH_PATH, PRISM_PATH, channels.yaml, settings, and subprocess."""
         import shutil
 
         monkeypatch.setattr(forge, "DISPATCH_PATH", str(tmp_path / "dispatch"))
+        monkeypatch.setattr(forge, "PRISM_PATH", str(tmp_path / "prism"))
         monkeypatch.setattr(forge, "SETTINGS_PATH", tmp_path / "settings.json")
         dispatch_dir = tmp_path / "dispatch"
         dispatch_dir.mkdir()
         shutil.copy(agents_yaml_file, dispatch_dir / "agents.yaml")
+
+        prism_backend = tmp_path / "prism" / "backend"
+        prism_backend.mkdir(parents=True)
+        (prism_backend / "agents.yaml").write_text("agents: {}\n", encoding="utf-8")
 
         channels_dir = tmp_path / "anthem_home"
         channels_dir.mkdir()
@@ -313,6 +345,7 @@ class TestScaffold:
         )
 
         assert result["port"] == 8085
+        assert result["prism_port"] == 3101
         assert result["voice"] == "google/en-US-Chirp3-HD-Puck"
         assert result["wake_phrase"] == "hey my-rpg"
         assert result["token_env"] == "MY_RPG_ANTHEM_TOKEN"
@@ -326,6 +359,7 @@ class TestScaffold:
         workflow = (project_dir / "WORKFLOW.md").read_text(encoding="utf-8")
         assert 'repo: "rauriemo/my-rpg"' in workflow
         assert "localhost:8085" in workflow
+        assert "localhost:3101" in workflow
 
         assert any("git" in str(c) and "init" in str(c) for c in calls)
         assert any("anthem" in str(c) for c in calls)
@@ -341,6 +375,13 @@ class TestScaffold:
 
         agents_data = yaml.safe_load((dispatch_dir / "agents.yaml").read_text(encoding="utf-8"))
         assert agents_data["agents"]["my-rpg"]["wake_word"] == "assets/hey-my-rpg.ppn"
+
+        prism_agents = yaml.safe_load(
+            (tmp_path / "prism" / "backend" / "agents.yaml").read_text(encoding="utf-8")
+        )
+        assert "my-rpg" in prism_agents["agents"]
+        assert prism_agents["agents"]["my-rpg"]["endpoint"] == "ws://localhost:3101"
+        assert prism_agents["agents"]["my-rpg"]["token_env"] == "PRISM_ANTHEM_TOKEN"
 
     def test_scaffold_with_repo_url(self, tmp_path, monkeypatch, agents_yaml_file):
         calls, _ = self._setup_scaffold_env(tmp_path, monkeypatch, agents_yaml_file)

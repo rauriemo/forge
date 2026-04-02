@@ -16,6 +16,7 @@ import yaml
 logger = logging.getLogger(__name__)
 
 DISPATCH_PATH = r"C:\Users\I9 Ultra\Dispatch"
+PRISM_PATH = r"C:\Users\I9 Ultra\prism"
 SETTINGS_PATH = Path(__file__).parent / "settings.json"
 GITHUB_ORG = "rauriemo"
 
@@ -59,6 +60,32 @@ def next_available_port(agents_yaml_path: str, start: int = 8085) -> int:
     """Return the first port >= start not already used in agents.yaml."""
     used = set(get_used_ports(agents_yaml_path))
     port = start
+    while port in used:
+        port += 1
+    return port
+
+
+def get_used_prism_ports(prism_agents_yaml_path: str) -> list[int]:
+    """Read Prism's agents.yaml and extract port numbers from endpoint URLs."""
+    path = Path(prism_agents_yaml_path)
+    if not path.exists():
+        return []
+    data = yaml.safe_load(path.read_text(encoding="utf-8"))
+    if not data or "agents" not in data:
+        return []
+    ports: list[int] = []
+    for agent in data["agents"].values():
+        endpoint = agent.get("endpoint", "")
+        match = re.search(r":(\d+)$", endpoint)
+        if match:
+            ports.append(int(match.group(1)))
+    return sorted(ports)
+
+
+def next_available_prism_port(agents_yaml_path: str, prism_agents_yaml_path: str) -> int:
+    """Return the first prism port >= 3101 not used in either agents.yaml."""
+    used = set(get_used_ports(agents_yaml_path)) | set(get_used_prism_ports(prism_agents_yaml_path))
+    port = 3101
     while port in used:
         port += 1
     return port
@@ -132,6 +159,33 @@ def add_agent_to_dispatch(
     path.write_text(yaml.dump(data, default_flow_style=False, sort_keys=False), encoding="utf-8")
 
 
+def add_agent_to_prism(
+    prism_agents_yaml_path: str,
+    name: str,
+    prism_port: int,
+    voice: str,
+    fallback_voice: str,
+) -> None:
+    """Add a new agent entry to Prism's agents.yaml. Idempotent."""
+    path = Path(prism_agents_yaml_path)
+    if path.exists():
+        data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    else:
+        data = {}
+    if name in data.get("agents", {}):
+        logger.debug("Agent %s already exists in Prism agents.yaml, skipping", name)
+        return
+    data.setdefault("agents", {})[name] = {
+        "type": "anthem",
+        "endpoint": f"ws://localhost:{prism_port}",
+        "token_env": "PRISM_ANTHEM_TOKEN",
+        "voice": voice,
+        "fallback_voice": fallback_voice,
+    }
+    path.write_text(yaml.dump(data, default_flow_style=False, sort_keys=False), encoding="utf-8")
+    logger.info("Registered agent %s in Prism agents.yaml on port %d", name, prism_port)
+
+
 def add_token_to_env(env_path: str, key: str, value: str) -> None:
     """Append KEY=value to a .env file. Skip if key already present."""
     path = Path(env_path)
@@ -162,6 +216,28 @@ def get_dispatch_token(channels_yaml_path: str) -> str:
     token = dispatch.get("token", "")
     if not token:
         raise ValueError("No dispatch.token found in channels.yaml")
+    return token
+
+
+def get_prism_token(channels_yaml_path: str) -> str:
+    """Read the shared prism token from channels.yaml.
+
+    If prism.token doesn't exist yet, generate one and write it back.
+    """
+    path = Path(channels_yaml_path)
+    if not path.exists():
+        raise FileNotFoundError(f"channels.yaml not found at {channels_yaml_path}")
+    data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    prism = data.get("prism", {})
+    token = prism.get("token", "")
+    if not token:
+        token = generate_token()
+        data.setdefault("prism", {})["token"] = token
+        path.write_text(
+            yaml.dump(data, default_flow_style=False, sort_keys=False),
+            encoding="utf-8",
+        )
+        logger.info("Generated prism token in %s", channels_yaml_path)
     return token
 
 
@@ -269,6 +345,9 @@ channels:
   - kind: dispatch
     target: "localhost:{port}"
     events: [task.completed, task.failed]
+  - kind: prism
+    target: "localhost:{prism_port}"
+    events: [task.completed, task.failed]
 
 agent:
   command: "claude"
@@ -331,13 +410,18 @@ def scaffold_project(
     subprocess.run(["anthem", "init"], cwd=project_dir, check=True)
 
     port = next_available_port(agents_yaml_path)
+    prism_agents_yaml_path = str(Path(PRISM_PATH) / "backend" / "agents.yaml")
+    prism_port = next_available_prism_port(agents_yaml_path, prism_agents_yaml_path)
     primary_voice, fallback_voice = allocate_voice(agents_yaml_path)
     token_env = f"{sanitized.upper().replace('-', '_')}_ANTHEM_TOKEN"
 
     shared_token = get_dispatch_token(channels_yaml_path)
+    prism_token = get_prism_token(channels_yaml_path)
 
     repo_full = f"{GITHUB_ORG}/{sanitized}"
-    workflow_content = WORKFLOW_TEMPLATE.format(port=port, repo=repo_full)
+    workflow_content = WORKFLOW_TEMPLATE.format(
+        port=port, prism_port=prism_port, repo=repo_full,
+    )
     (project_dir / "WORKFLOW.md").write_text(workflow_content, encoding="utf-8")
     (project_dir / ".gitignore").write_text(GITIGNORE_CONTENT, encoding="utf-8")
 
@@ -346,6 +430,13 @@ def scaffold_project(
         name=sanitized,
         port=port,
         token_env=token_env,
+        voice=primary_voice,
+        fallback_voice=fallback_voice,
+    )
+    add_agent_to_prism(
+        prism_agents_yaml_path=prism_agents_yaml_path,
+        name=sanitized,
+        prism_port=prism_port,
         voice=primary_voice,
         fallback_voice=fallback_voice,
     )
@@ -361,6 +452,7 @@ def scaffold_project(
     return {
         "path": str(project_dir),
         "port": port,
+        "prism_port": prism_port,
         "voice": primary_voice,
         "fallback_voice": fallback_voice,
         "wake_phrase": wake_phrase,

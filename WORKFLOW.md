@@ -18,6 +18,9 @@ channels:
   - kind: dispatch
     target: "localhost:8084"
     events: [task.completed, task.failed]
+  - kind: prism
+    target: "localhost:3102"
+    events: [task.completed, task.failed]
 
 agent:
   command: "claude"
