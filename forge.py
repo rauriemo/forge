@@ -168,10 +168,7 @@ def add_agent_to_prism(
 ) -> None:
     """Add a new agent entry to Prism's agents.yaml. Idempotent."""
     path = Path(prism_agents_yaml_path)
-    if path.exists():
-        data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
-    else:
-        data = {}
+    data = yaml.safe_load(path.read_text(encoding="utf-8")) or {} if path.exists() else {}
     if name in data.get("agents", {}):
         logger.debug("Agent %s already exists in Prism agents.yaml, skipping", name)
         return
@@ -416,7 +413,7 @@ def scaffold_project(
     token_env = f"{sanitized.upper().replace('-', '_')}_ANTHEM_TOKEN"
 
     shared_token = get_dispatch_token(channels_yaml_path)
-    prism_token = get_prism_token(channels_yaml_path)
+    get_prism_token(channels_yaml_path)
 
     repo_full = f"{GITHUB_ORG}/{sanitized}"
     workflow_content = WORKFLOW_TEMPLATE.format(
