@@ -304,7 +304,7 @@ def parse_agent_file(filepath: str) -> tuple[dict, str]:
     if idx < 0:
         raise ValueError(f"Missing closing --- delimiter in {filepath}")
     yaml_part = rest[:idx]
-    body = rest[idx + 4:].lstrip("\n")
+    body = rest[idx + 4 :].lstrip("\n")
     frontmatter = yaml.safe_load(yaml_part) or {}
     return frontmatter, body
 
