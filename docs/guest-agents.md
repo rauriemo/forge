@@ -51,6 +51,13 @@ Markdown files with YAML frontmatter in `{project-root}/agents/`. Full format do
 | `role`, `capabilities` | `metadata` | Optional |
 | `voice`, `fallback_voice`, `icon`, `extra_context` | -- | NOT synced |
 
+### Cross-reference: Anthem guest orchestration
+
+Forge defers runtime routing to Anthem. Routing always fires at 1+ active guests; the router decides selection, directed text, and orchestrator participation. Brief notes aligned with the current Anthem spec:
+
+- **`RoutingResult`:** Includes `directed_text` for per-guest focus extraction.
+- **Post-round suggestions:** Feature-flagged off by default; enable via Anthem `EnableGuestSuggestions` config.
+
 ## Phase 2 -- Starter Agent Scaffolding
 
 ### New function: `scaffold_agents_directory`
