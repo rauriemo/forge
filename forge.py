@@ -384,6 +384,17 @@ settings.json
 """
 
 
+def normalize_repo_url(url: str) -> str:
+    """Expand GitHub shorthand (owner/repo) into a full HTTPS clone URL.
+
+    Already-complete URLs (https://, git@, ssh://) are returned unchanged.
+    """
+    trimmed = url.strip()
+    if re.match(r"^[A-Za-z\d][\w.-]*/[\w.-]+$", trimmed):
+        return f"https://github.com/{trimmed}.git"
+    return trimmed
+
+
 def scaffold_project(
     base_path: str,
     name: str,
@@ -400,7 +411,8 @@ def scaffold_project(
     channels_yaml_path = str(Path.home() / ".anthem" / "channels.yaml")
 
     if repo_url:
-        subprocess.run(["git", "clone", repo_url, "."], cwd=project_dir, check=True)
+        clone_url = normalize_repo_url(repo_url)
+        subprocess.run(["git", "clone", clone_url, "."], cwd=project_dir, check=True)
     else:
         subprocess.run(["git", "init"], cwd=project_dir, check=True)
 

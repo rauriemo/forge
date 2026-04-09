@@ -302,6 +302,68 @@ class TestCreateGithubRepo:
             forge.create_github_repo(str(tmp_path), "dup-repo")
 
 
+class TestNormalizeRepoUrl:
+    def test_owner_repo_shorthand(self):
+        assert forge.normalize_repo_url("felipeblassioli/oncall-roster") == \
+            "https://github.com/felipeblassioli/oncall-roster.git"
+
+    def test_owner_repo_with_dots(self):
+        assert forge.normalize_repo_url("my-org/my-lib.js") == \
+            "https://github.com/my-org/my-lib.js.git"
+
+    def test_https_url_unchanged(self):
+        url = "https://github.com/user/repo.git"
+        assert forge.normalize_repo_url(url) == url
+
+    def test_https_url_without_dot_git_unchanged(self):
+        url = "https://github.com/user/repo"
+        assert forge.normalize_repo_url(url) == url
+
+    def test_ssh_url_unchanged(self):
+        url = "git@github.com:user/repo.git"
+        assert forge.normalize_repo_url(url) == url
+
+    def test_ssh_protocol_url_unchanged(self):
+        url = "ssh://git@github.com/user/repo.git"
+        assert forge.normalize_repo_url(url) == url
+
+    def test_strips_whitespace(self):
+        assert forge.normalize_repo_url("  owner/repo  ") == \
+            "https://github.com/owner/repo.git"
+
+    def test_gitlab_https_unchanged(self):
+        url = "https://gitlab.com/org/project.git"
+        assert forge.normalize_repo_url(url) == url
+
+    def test_relative_dot_slash_not_treated_as_shorthand(self):
+        assert forge.normalize_repo_url("./repo") == "./repo"
+
+    def test_relative_dotdot_slash_not_treated_as_shorthand(self):
+        assert forge.normalize_repo_url("../repo") == "../repo"
+
+    def test_nested_path_not_treated_as_shorthand(self):
+        assert forge.normalize_repo_url("a/b/c") == "a/b/c"
+
+    def test_http_url_unchanged(self):
+        url = "http://github.com/user/repo.git"
+        assert forge.normalize_repo_url(url) == url
+
+    def test_git_protocol_url_unchanged(self):
+        url = "git://github.com/user/repo.git"
+        assert forge.normalize_repo_url(url) == url
+
+    def test_single_segment_not_treated_as_shorthand(self):
+        assert forge.normalize_repo_url("justrepo") == "justrepo"
+
+    def test_shorthand_with_underscores(self):
+        assert forge.normalize_repo_url("my_org/my_repo") == \
+            "https://github.com/my_org/my_repo.git"
+
+    def test_shorthand_with_hyphens(self):
+        assert forge.normalize_repo_url("my-org/my-repo") == \
+            "https://github.com/my-org/my-repo.git"
+
+
 class TestScaffold:
     def _setup_scaffold_env(self, tmp_path, monkeypatch, agents_yaml_file):
         """Common setup: mock DISPATCH_PATH, PRISM_PATH, channels.yaml, settings, and subprocess."""
@@ -383,7 +445,7 @@ class TestScaffold:
         assert prism_agents["agents"]["my-rpg"]["endpoint"] == "ws://localhost:3101"
         assert prism_agents["agents"]["my-rpg"]["token_env"] == "PRISM_ANTHEM_TOKEN"
 
-    def test_scaffold_with_repo_url(self, tmp_path, monkeypatch, agents_yaml_file):
+    def test_scaffold_with_https_url(self, tmp_path, monkeypatch, agents_yaml_file):
         calls, _ = self._setup_scaffold_env(tmp_path, monkeypatch, agents_yaml_file)
 
         forge.scaffold_project(
@@ -392,7 +454,32 @@ class TestScaffold:
             repo_url="https://github.com/user/repo.git",
         )
 
-        assert any("clone" in str(c) for c in calls)
+        clone_call = next(c for c in calls if "clone" in str(c))
+        assert clone_call == ["git", "clone", "https://github.com/user/repo.git", "."]
+
+    def test_scaffold_with_shorthand(self, tmp_path, monkeypatch, agents_yaml_file):
+        calls, _ = self._setup_scaffold_env(tmp_path, monkeypatch, agents_yaml_file)
+
+        forge.scaffold_project(
+            base_path=str(tmp_path / "projects"),
+            name="test-short",
+            repo_url="user/repo",
+        )
+
+        clone_call = next(c for c in calls if "clone" in str(c))
+        assert clone_call == ["git", "clone", "https://github.com/user/repo.git", "."]
+
+    def test_scaffold_with_ssh_url(self, tmp_path, monkeypatch, agents_yaml_file):
+        calls, _ = self._setup_scaffold_env(tmp_path, monkeypatch, agents_yaml_file)
+
+        forge.scaffold_project(
+            base_path=str(tmp_path / "projects"),
+            name="test-ssh",
+            repo_url="git@github.com:user/repo.git",
+        )
+
+        clone_call = next(c for c in calls if "clone" in str(c))
+        assert clone_call == ["git", "clone", "git@github.com:user/repo.git", "."]
 
     def test_scaffold_respects_private_setting(self, tmp_path, monkeypatch, agents_yaml_file):
         calls, _ = self._setup_scaffold_env(tmp_path, monkeypatch, agents_yaml_file)
