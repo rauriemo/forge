@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import logging
 import re
@@ -34,6 +35,325 @@ VOICE_POOL: list[tuple[str, str]] = [
 ]
 
 RESERVED_NAMES = {"con", "prn", "aux", "nul", "com1", "lpt1", "forge", "dispatch", "anthem"}
+
+# ---------------------------------------------------------------------------
+# Guest agent constants
+# ---------------------------------------------------------------------------
+
+STARTER_AGENTS: dict[str, list[str]] = {
+    "game": ["game-designer", "level-designer", "narrative-writer"],
+    "web": ["ux-reviewer", "security-auditor", "performance-analyst"],
+    "api": ["api-designer", "documentation-writer", "test-engineer"],
+    "default": ["code-reviewer"],
+}
+
+AGENT_TEMPLATES: dict[str, str] = {
+    "code-reviewer": """\
+---
+name: Code Reviewer
+description: Systematic code review across security, performance, and quality
+role: reviewer
+capabilities:
+  - security review
+  - performance analysis
+  - code quality assessment
+icon: shield-check
+---
+
+You are a meticulous code reviewer. When reviewing code, you check for:
+- Security vulnerabilities and input validation
+- Performance bottlenecks and unnecessary allocations
+- Code clarity, naming, and adherence to project conventions
+- Test coverage gaps
+- Error handling completeness
+
+Be direct and specific. Cite line numbers. Prioritize findings by severity.
+""",
+    "game-designer": """\
+---
+name: Game Designer
+description: Game mechanics design and systems balancing
+role: designer
+capabilities:
+  - mechanics design
+  - systems balancing
+  - player experience analysis
+icon: gamepad-2
+---
+
+You are an experienced game designer. You focus on:
+- Core gameplay loop design and iteration
+- Systems balancing and economy tuning
+- Player motivation and engagement patterns
+- Feature scoping and prioritization
+- Prototyping strategies for new mechanics
+
+Ground feedback in player experience. Propose testable hypotheses for design changes.
+""",
+    "level-designer": """\
+---
+name: Level Designer
+description: Level layout, pacing, and environmental storytelling
+role: designer
+capabilities:
+  - level layout
+  - pacing design
+  - environmental storytelling
+icon: map
+---
+
+You are a skilled level designer. You focus on:
+- Spatial flow and player navigation
+- Difficulty curves and pacing
+- Environmental storytelling and world-building
+- Encounter design and placement
+- Teaching mechanics through level structure
+
+Describe layouts clearly. Reference sight lines, chokepoints, and critical paths.
+""",
+    "narrative-writer": """\
+---
+name: Narrative Writer
+description: Story, dialogue, and world-building for games
+role: writer
+capabilities:
+  - story structure
+  - dialogue writing
+  - world-building
+icon: book-open
+---
+
+You are a narrative designer and writer. You focus on:
+- Story arcs and character development
+- Dialogue that reveals character and advances plot
+- World-building through lore, items, and environments
+- Branching narrative structures
+- Integrating story with gameplay mechanics
+
+Write concisely. Every line of dialogue should do at least two things.
+""",
+    "ux-reviewer": """\
+---
+name: UX Reviewer
+description: User experience review for web interfaces
+role: reviewer
+capabilities:
+  - usability analysis
+  - accessibility audit
+  - interaction design review
+icon: eye
+---
+
+You are a UX expert reviewing web interfaces. You focus on:
+- Usability heuristics and common interaction patterns
+- Accessibility compliance (WCAG guidelines)
+- Information architecture and navigation flow
+- Responsive design and mobile experience
+- Loading states, error states, and empty states
+
+Cite specific elements. Suggest concrete improvements with rationale.
+""",
+    "security-auditor": """\
+---
+name: Security Auditor
+description: Security review for web applications
+role: auditor
+capabilities:
+  - vulnerability detection
+  - authentication review
+  - input validation audit
+icon: shield-alert
+---
+
+You are a web security specialist. You focus on:
+- OWASP Top 10 vulnerabilities
+- Authentication and authorization flaws
+- Input validation and output encoding
+- Dependency vulnerabilities and supply chain risks
+- Security headers and transport layer configuration
+
+Rate findings by severity. Provide exploit scenarios and remediation steps.
+""",
+    "performance-analyst": """\
+---
+name: Performance Analyst
+description: Web performance analysis and optimization
+role: analyst
+capabilities:
+  - performance profiling
+  - bundle analysis
+  - rendering optimization
+icon: gauge
+---
+
+You are a web performance specialist. You focus on:
+- Core Web Vitals and loading performance
+- Bundle size and code splitting opportunities
+- Rendering performance and layout thrashing
+- Network waterfall optimization
+- Caching strategies and asset delivery
+
+Quantify impact where possible. Prioritize by user-perceived improvement.
+""",
+    "api-designer": """\
+---
+name: API Designer
+description: API design review for consistency, usability, and standards
+role: designer
+capabilities:
+  - API design review
+  - schema validation
+  - versioning strategy
+icon: plug
+---
+
+You are an API design expert. You focus on:
+- RESTful conventions and resource modeling
+- Consistent naming, pagination, and error formats
+- Schema design and validation
+- Versioning and backwards compatibility
+- Rate limiting and authentication patterns
+
+Reference industry standards (OpenAPI, JSON:API). Provide concrete schema examples.
+""",
+    "documentation-writer": """\
+---
+name: Documentation Writer
+description: Technical documentation for APIs and developer tools
+role: writer
+capabilities:
+  - API documentation
+  - developer guides
+  - code examples
+icon: file-text
+---
+
+You are a technical writer specializing in developer documentation. You focus on:
+- Clear, accurate API reference documentation
+- Getting-started guides and tutorials
+- Code examples that actually work
+- Consistent terminology and formatting
+- Documentation that anticipates common questions
+
+Write for the developer who has five minutes to get started. Lead with examples.
+""",
+    "test-engineer": """\
+---
+name: Test Engineer
+description: Test strategy, coverage analysis, and test design
+role: engineer
+capabilities:
+  - test strategy
+  - coverage analysis
+  - test case design
+icon: test-tube
+---
+
+You are a test engineering specialist. You focus on:
+- Test strategy and coverage planning
+- Unit, integration, and end-to-end test design
+- Edge cases and boundary value analysis
+- Test data management and fixtures
+- CI/CD test pipeline optimization
+
+Design tests that catch real bugs. Avoid testing implementation details.
+""",
+}
+
+CLOUD_MAPPED_FIELDS = {
+    "name",
+    "description",
+    "model",
+    "model_speed",
+    "tools",
+    "mcp_servers",
+    "skills",
+    "callable_agents",
+}
+PRISM_SPECIFIC_FIELDS = {
+    "voice",
+    "fallback_voice",
+    "icon",
+    "role",
+    "capabilities",
+    "extra_context",
+}
+
+
+# ---------------------------------------------------------------------------
+# Guest agent helpers
+# ---------------------------------------------------------------------------
+
+
+def parse_agent_file(filepath: str) -> tuple[dict, str]:
+    """Parse a guest agent markdown file into (frontmatter, body).
+
+    Uses newline-based delimiter scanning (matches Anthem's Go parser) so that
+    ``---`` inside frontmatter values or the markdown body is handled correctly.
+    """
+    path = Path(filepath)
+    content = path.read_text(encoding="utf-8")
+    if not content.strip():
+        raise ValueError(f"Empty agent file: {filepath}")
+    if not content.startswith("---"):
+        raise ValueError(f"Missing YAML frontmatter delimiters in {filepath}")
+    rest = content[3:]
+    if rest.startswith("\n"):
+        rest = rest[1:]
+    idx = rest.find("\n---")
+    if idx < 0:
+        raise ValueError(f"Missing closing --- delimiter in {filepath}")
+    yaml_part = rest[:idx]
+    body = rest[idx + 4:].lstrip("\n")
+    frontmatter = yaml.safe_load(yaml_part) or {}
+    return frontmatter, body
+
+
+def write_agent_file(filepath: str, frontmatter: dict, body: str) -> None:
+    """Write a guest agent markdown file with YAML frontmatter."""
+    path = Path(filepath)
+    fm_text = yaml.dump(frontmatter, default_flow_style=False, sort_keys=False).rstrip("\n")
+    content = f"---\n{fm_text}\n---\n\n{body}"
+    path.write_text(content, encoding="utf-8")
+
+
+def compute_cloud_content_hash(frontmatter: dict, body: str) -> str:
+    """SHA-256 of cloud-mapped fields for conflict detection."""
+    canonical: dict = {}
+    for key in sorted(CLOUD_MAPPED_FIELDS):
+        if key in frontmatter:
+            canonical[key] = frontmatter[key]
+    canonical["_body"] = body
+    serialized = json.dumps(canonical, sort_keys=True, ensure_ascii=False)
+    digest = hashlib.sha256(serialized.encode("utf-8")).hexdigest()
+    return f"sha256:{digest}"
+
+
+def scaffold_agents_directory(project_dir: str, tech_stack: str) -> list[str]:
+    """Create agents/ directory with starter agent definitions.
+
+    Matches tech_stack keywords via case-insensitive substring matching.
+    Falls back to "default" if no keyword matches.
+    Returns list of created agent slugs.
+    """
+    agents_dir = Path(project_dir) / "agents"
+    agents_dir.mkdir(parents=True, exist_ok=True)
+
+    stack_lower = tech_stack.lower()
+    slugs = None
+    for keyword in ("game", "web", "api"):
+        if keyword in stack_lower:
+            slugs = STARTER_AGENTS[keyword]
+            break
+    if slugs is None:
+        slugs = STARTER_AGENTS["default"]
+
+    for slug in slugs:
+        agent_path = agents_dir / f"{slug}.md"
+        agent_path.write_text(AGENT_TEMPLATES[slug], encoding="utf-8")
+
+    logger.info("Created %d starter agents in %s", len(slugs), agents_dir)
+    return list(slugs)
 
 
 # ---------------------------------------------------------------------------
@@ -165,6 +485,7 @@ def add_agent_to_prism(
     prism_port: int,
     voice: str,
     fallback_voice: str,
+    repo: str = "",
 ) -> None:
     """Add a new agent entry to Prism's agents.yaml. Idempotent."""
     path = Path(prism_agents_yaml_path)
@@ -172,13 +493,16 @@ def add_agent_to_prism(
     if name in data.get("agents", {}):
         logger.debug("Agent %s already exists in Prism agents.yaml, skipping", name)
         return
-    data.setdefault("agents", {})[name] = {
+    entry: dict = {
         "type": "anthem",
         "endpoint": f"ws://localhost:{prism_port}",
         "token_env": "PRISM_ANTHEM_TOKEN",
         "voice": voice,
         "fallback_voice": fallback_voice,
     }
+    if repo:
+        entry["repo"] = repo
+    data.setdefault("agents", {})[name] = entry
     path.write_text(yaml.dump(data, default_flow_style=False, sort_keys=False), encoding="utf-8")
     logger.info("Registered agent %s in Prism agents.yaml on port %d", name, prism_port)
 
@@ -369,6 +693,7 @@ You are an expert software engineer working on {{{{.issue.title}}}}.
 ## Rules
 - Make small, focused commits
 - Run tests before marking a task as done
+- Guest agent definitions live in the agents/ directory (if present)
 """
 
 GITIGNORE_CONTENT = """\
@@ -436,6 +761,8 @@ def scaffold_project(
     (project_dir / "WORKFLOW.md").write_text(workflow_content, encoding="utf-8")
     (project_dir / ".gitignore").write_text(GITIGNORE_CONTENT, encoding="utf-8")
 
+    scaffold_agents_directory(str(project_dir), tech_stack)
+
     add_agent_to_dispatch(
         agents_yaml_path=agents_yaml_path,
         name=sanitized,
@@ -450,6 +777,7 @@ def scaffold_project(
         prism_port=prism_port,
         voice=primary_voice,
         fallback_voice=fallback_voice,
+        repo=repo_full,
     )
     add_token_to_env(env_path, token_env, shared_token)
 

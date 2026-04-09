@@ -137,6 +137,69 @@ class TestYamlEditing:
         assert len(data["agents"]) == 6
 
 
+class TestPrismYamlEditing:
+    def test_add_agent_with_repo(self, tmp_path):
+        prism_yaml = tmp_path / "agents.yaml"
+        prism_yaml.write_text(yaml.dump({"agents": {}}), encoding="utf-8")
+        forge.add_agent_to_prism(
+            str(prism_yaml),
+            name="rpg",
+            prism_port=3107,
+            voice="google/en-US-Chirp3-HD-Puck",
+            fallback_voice="en-US-GuyNeural",
+            repo="rauriemo/rpg",
+        )
+        data = yaml.safe_load(prism_yaml.read_text(encoding="utf-8"))
+        entry = data["agents"]["rpg"]
+        assert entry["repo"] == "rauriemo/rpg"
+        assert entry["endpoint"] == "ws://localhost:3107"
+        assert entry["voice"] == "google/en-US-Chirp3-HD-Puck"
+        assert entry["token_env"] == "PRISM_ANTHEM_TOKEN"
+
+    def test_add_agent_without_repo(self, tmp_path):
+        prism_yaml = tmp_path / "agents.yaml"
+        prism_yaml.write_text(yaml.dump({"agents": {}}), encoding="utf-8")
+        forge.add_agent_to_prism(
+            str(prism_yaml),
+            name="rpg",
+            prism_port=3107,
+            voice="google/en-US-Chirp3-HD-Puck",
+            fallback_voice="en-US-GuyNeural",
+        )
+        data = yaml.safe_load(prism_yaml.read_text(encoding="utf-8"))
+        entry = data["agents"]["rpg"]
+        assert "repo" not in entry
+
+    def test_idempotent(self, tmp_path):
+        prism_yaml = tmp_path / "agents.yaml"
+        prism_yaml.write_text(yaml.dump({"agents": {}}), encoding="utf-8")
+        for _ in range(2):
+            forge.add_agent_to_prism(
+                str(prism_yaml),
+                name="rpg",
+                prism_port=3107,
+                voice="google/en-US-Chirp3-HD-Puck",
+                fallback_voice="en-US-GuyNeural",
+                repo="rauriemo/rpg",
+            )
+        data = yaml.safe_load(prism_yaml.read_text(encoding="utf-8"))
+        assert len(data["agents"]) == 1
+
+    def test_creates_file_if_missing(self, tmp_path):
+        prism_yaml = tmp_path / "agents.yaml"
+        forge.add_agent_to_prism(
+            str(prism_yaml),
+            name="rpg",
+            prism_port=3107,
+            voice="google/en-US-Chirp3-HD-Puck",
+            fallback_voice="en-US-GuyNeural",
+            repo="rauriemo/rpg",
+        )
+        assert prism_yaml.exists()
+        data = yaml.safe_load(prism_yaml.read_text(encoding="utf-8"))
+        assert "rpg" in data["agents"]
+
+
 class TestEnvEditing:
     def test_append_key(self, tmp_path):
         env = tmp_path / ".env"
@@ -304,12 +367,16 @@ class TestCreateGithubRepo:
 
 class TestNormalizeRepoUrl:
     def test_owner_repo_shorthand(self):
-        assert forge.normalize_repo_url("felipeblassioli/oncall-roster") == \
-            "https://github.com/felipeblassioli/oncall-roster.git"
+        assert (
+            forge.normalize_repo_url("felipeblassioli/oncall-roster")
+            == "https://github.com/felipeblassioli/oncall-roster.git"
+        )
 
     def test_owner_repo_with_dots(self):
-        assert forge.normalize_repo_url("my-org/my-lib.js") == \
-            "https://github.com/my-org/my-lib.js.git"
+        assert (
+            forge.normalize_repo_url("my-org/my-lib.js")
+            == "https://github.com/my-org/my-lib.js.git"
+        )
 
     def test_https_url_unchanged(self):
         url = "https://github.com/user/repo.git"
@@ -328,8 +395,7 @@ class TestNormalizeRepoUrl:
         assert forge.normalize_repo_url(url) == url
 
     def test_strips_whitespace(self):
-        assert forge.normalize_repo_url("  owner/repo  ") == \
-            "https://github.com/owner/repo.git"
+        assert forge.normalize_repo_url("  owner/repo  ") == "https://github.com/owner/repo.git"
 
     def test_gitlab_https_unchanged(self):
         url = "https://gitlab.com/org/project.git"
@@ -356,12 +422,214 @@ class TestNormalizeRepoUrl:
         assert forge.normalize_repo_url("justrepo") == "justrepo"
 
     def test_shorthand_with_underscores(self):
-        assert forge.normalize_repo_url("my_org/my_repo") == \
-            "https://github.com/my_org/my_repo.git"
+        assert forge.normalize_repo_url("my_org/my_repo") == "https://github.com/my_org/my_repo.git"
 
     def test_shorthand_with_hyphens(self):
-        assert forge.normalize_repo_url("my-org/my-repo") == \
-            "https://github.com/my-org/my-repo.git"
+        assert forge.normalize_repo_url("my-org/my-repo") == "https://github.com/my-org/my-repo.git"
+
+
+class TestAgentFileParsing:
+    def test_parse_valid_file(self, tmp_path):
+        p = tmp_path / "agent.md"
+        p.write_text(
+            "---\nname: Test\ndescription: A test agent\nrole: reviewer\n---\n\nBody text here.\n",
+            encoding="utf-8",
+        )
+        fm, body = forge.parse_agent_file(str(p))
+        assert fm["name"] == "Test"
+        assert fm["description"] == "A test agent"
+        assert fm["role"] == "reviewer"
+        assert "Body text here." in body
+
+    def test_parse_minimal_file(self, tmp_path):
+        p = tmp_path / "agent.md"
+        p.write_text("---\nname: Min\n---\n\nHello.\n", encoding="utf-8")
+        fm, body = forge.parse_agent_file(str(p))
+        assert fm["name"] == "Min"
+        assert "description" not in fm
+        assert "Hello." in body
+
+    def test_parse_extra_unknown_fields(self, tmp_path):
+        p = tmp_path / "agent.md"
+        p.write_text("---\nname: X\nfuture_field: hello\n---\n\nBody.\n", encoding="utf-8")
+        fm, _body = forge.parse_agent_file(str(p))
+        assert fm["future_field"] == "hello"
+        assert fm["name"] == "X"
+
+    def test_parse_missing_delimiters_raises(self, tmp_path):
+        p = tmp_path / "agent.md"
+        p.write_text("name: Test\nNo delimiters here.\n", encoding="utf-8")
+        with pytest.raises(ValueError, match="delimiter"):
+            forge.parse_agent_file(str(p))
+
+    def test_parse_empty_file_raises(self, tmp_path):
+        p = tmp_path / "agent.md"
+        p.write_text("", encoding="utf-8")
+        with pytest.raises(ValueError, match="Empty"):
+            forge.parse_agent_file(str(p))
+
+    def test_write_then_parse_roundtrip(self, tmp_path):
+        p = tmp_path / "agent.md"
+        fm_in = {"name": "Roundtrip", "description": "Test roundtrip", "role": "tester"}
+        body_in = "This is the body.\n\nWith multiple paragraphs.\n"
+        forge.write_agent_file(str(p), fm_in, body_in)
+        fm_out, body_out = forge.parse_agent_file(str(p))
+        assert fm_out["name"] == fm_in["name"]
+        assert fm_out["description"] == fm_in["description"]
+        assert fm_out["role"] == fm_in["role"]
+        assert body_out == body_in
+
+    def test_write_preserves_body_verbatim(self, tmp_path):
+        p = tmp_path / "agent.md"
+        body = "Line one.\n  Indented line.\n\n- Bullet\n- List\n"
+        forge.write_agent_file(str(p), {"name": "V"}, body)
+        _, body_out = forge.parse_agent_file(str(p))
+        assert body_out == body
+
+    def test_parse_body_with_horizontal_rule(self, tmp_path):
+        p = tmp_path / "agent.md"
+        p.write_text(
+            "---\nname: Test\n---\n\nBefore rule\n\n---\n\nAfter rule\n",
+            encoding="utf-8",
+        )
+        fm, body = forge.parse_agent_file(str(p))
+        assert fm["name"] == "Test"
+        assert "Before rule" in body
+        assert "After rule" in body
+
+    def test_parse_body_with_multiple_horizontal_rules(self, tmp_path):
+        p = tmp_path / "agent.md"
+        p.write_text(
+            "---\nname: Multi\n---\n\nSection A\n\n---\n\nSection B\n\n---\n\nSection C\n",
+            encoding="utf-8",
+        )
+        fm, body = forge.parse_agent_file(str(p))
+        assert fm["name"] == "Multi"
+        assert "Section A" in body
+        assert "Section B" in body
+        assert "Section C" in body
+
+
+class TestCloudContentHash:
+    def test_deterministic(self):
+        fm = {"name": "A", "description": "B"}
+        body = "Body"
+        h1 = forge.compute_cloud_content_hash(fm, body)
+        h2 = forge.compute_cloud_content_hash(fm, body)
+        assert h1 == h2
+
+    def test_different_description(self):
+        body = "Same"
+        h1 = forge.compute_cloud_content_hash({"name": "A", "description": "B"}, body)
+        h2 = forge.compute_cloud_content_hash({"name": "A", "description": "C"}, body)
+        assert h1 != h2
+
+    def test_different_model(self):
+        body = "Same"
+        h1 = forge.compute_cloud_content_hash({"name": "A", "model": "opus"}, body)
+        h2 = forge.compute_cloud_content_hash({"name": "A", "model": "sonnet"}, body)
+        assert h1 != h2
+
+    def test_prism_voice_change_no_effect(self):
+        body = "Same"
+        h1 = forge.compute_cloud_content_hash({"name": "A", "voice": "v1"}, body)
+        h2 = forge.compute_cloud_content_hash({"name": "A", "voice": "v2"}, body)
+        assert h1 == h2
+
+    def test_prism_extra_context_no_effect(self):
+        body = "Same"
+        h1 = forge.compute_cloud_content_hash({"name": "A", "extra_context": "x"}, body)
+        h2 = forge.compute_cloud_content_hash({"name": "A", "extra_context": "y"}, body)
+        assert h1 == h2
+
+    def test_prism_role_change_no_effect(self):
+        body = "Same"
+        h1 = forge.compute_cloud_content_hash({"name": "A", "role": "reviewer"}, body)
+        h2 = forge.compute_cloud_content_hash({"name": "A", "role": "designer"}, body)
+        assert h1 == h2
+
+    def test_prism_icon_change_no_effect(self):
+        body = "Same"
+        h1 = forge.compute_cloud_content_hash({"name": "A", "icon": "🎨"}, body)
+        h2 = forge.compute_cloud_content_hash({"name": "A", "icon": "🔧"}, body)
+        assert h1 == h2
+
+    def test_prism_fallback_voice_change_no_effect(self):
+        body = "Same"
+        h1 = forge.compute_cloud_content_hash({"name": "A", "fallback_voice": "v1"}, body)
+        h2 = forge.compute_cloud_content_hash({"name": "A", "fallback_voice": "v2"}, body)
+        assert h1 == h2
+
+    def test_body_change_affects_hash(self):
+        fm = {"name": "A"}
+        h1 = forge.compute_cloud_content_hash(fm, "Body 1")
+        h2 = forge.compute_cloud_content_hash(fm, "Body 2")
+        assert h1 != h2
+
+    def test_field_order_no_effect(self):
+        body = "Same"
+        h1 = forge.compute_cloud_content_hash(
+            {"name": "A", "description": "B", "model": "opus"},
+            body,
+        )
+        h2 = forge.compute_cloud_content_hash(
+            {"model": "opus", "name": "A", "description": "B"},
+            body,
+        )
+        assert h1 == h2
+
+    def test_hash_format(self):
+        h = forge.compute_cloud_content_hash({"name": "A"}, "body")
+        assert h.startswith("sha256:")
+        assert len(h) == 7 + 64  # "sha256:" + 64 hex chars
+
+
+class TestScaffoldAgents:
+    def test_game_stack(self, tmp_path):
+        slugs = forge.scaffold_agents_directory(str(tmp_path), "Unity game")
+        assert slugs == ["game-designer", "level-designer", "narrative-writer"]
+        for s in slugs:
+            assert (tmp_path / "agents" / f"{s}.md").exists()
+
+    def test_web_stack(self, tmp_path):
+        slugs = forge.scaffold_agents_directory(str(tmp_path), "React web app")
+        assert slugs == ["ux-reviewer", "security-auditor", "performance-analyst"]
+
+    def test_api_stack(self, tmp_path):
+        slugs = forge.scaffold_agents_directory(str(tmp_path), "FastAPI backend")
+        assert slugs == ["api-designer", "documentation-writer", "test-engineer"]
+
+    def test_default_fallback(self, tmp_path):
+        slugs = forge.scaffold_agents_directory(str(tmp_path), "something unusual")
+        assert slugs == ["code-reviewer"]
+
+    def test_case_insensitive(self, tmp_path):
+        slugs = forge.scaffold_agents_directory(str(tmp_path), "WEB APP")
+        assert slugs == ["ux-reviewer", "security-auditor", "performance-analyst"]
+
+    def test_valid_yaml_frontmatter(self, tmp_path):
+        forge.scaffold_agents_directory(str(tmp_path), "game")
+        for md in (tmp_path / "agents").iterdir():
+            fm, _body = forge.parse_agent_file(str(md))
+            assert "name" in fm
+            assert "description" in fm
+
+    def test_non_empty_body(self, tmp_path):
+        forge.scaffold_agents_directory(str(tmp_path), "web")
+        for md in (tmp_path / "agents").iterdir():
+            _, body = forge.parse_agent_file(str(md))
+            assert body.strip()
+
+    def test_creates_agents_dir(self, tmp_path):
+        forge.scaffold_agents_directory(str(tmp_path), "general")
+        assert (tmp_path / "agents").is_dir()
+
+    def test_existing_agents_dir(self, tmp_path):
+        (tmp_path / "agents").mkdir()
+        (tmp_path / "agents" / "existing.md").write_text("kept", encoding="utf-8")
+        slugs = forge.scaffold_agents_directory(str(tmp_path), "general")
+        assert slugs == ["code-reviewer"]
+        assert (tmp_path / "agents" / "existing.md").read_text(encoding="utf-8") == "kept"
 
 
 class TestScaffold:
@@ -422,6 +690,10 @@ class TestScaffold:
         assert 'repo: "rauriemo/my-rpg"' in workflow
         assert "localhost:8085" in workflow
         assert "localhost:3101" in workflow
+
+        agents_dir = project_dir / "agents"
+        assert agents_dir.is_dir()
+        assert any(agents_dir.glob("*.md"))
 
         assert any("git" in str(c) and "init" in str(c) for c in calls)
         assert any("anthem" in str(c) for c in calls)
