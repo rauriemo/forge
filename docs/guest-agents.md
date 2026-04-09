@@ -262,6 +262,8 @@ python forge.py check-updates [--project-dir <path>]
 
 ## Testing Strategy
 
+All tests use `tmp_path` for file I/O isolation. API calls mocked via `monkeypatch` on the HTTP client. Follow existing patterns in `tests/test_forge.py`: pytest classes, `monkeypatch` for subprocess, `conftest.py` fixtures.
+
 ### New test classes
 
 | Class | Covers |
@@ -277,9 +279,70 @@ python forge.py check-updates [--project-dir <path>]
 | `TestScaffoldAgents` | `scaffold_agents_directory` for each tech stack type |
 | `TestEnvironment` | `compute_requirements_fingerprint`, `create_or_reuse_environment` |
 
-All tests use `tmp_path` for file I/O isolation. API calls mocked via `monkeypatch` on the HTTP client.
+### Critical test cases per class
+
+**`TestAgentFileParsing`**:
+- Parse valid file with full frontmatter + body -- all fields extracted
+- Parse minimal file (name + description only) -- optional fields are None/empty
+- Parse file with extra unknown fields -- silently ignored (forward compat)
+- Parse file missing `---` delimiters -- raises error
+- Parse empty file -- raises error
+- Write then parse round-trip -- content is identical (YAML field order may differ, but values match)
+- Write preserves markdown body verbatim (no whitespace munging)
+
+**`TestFieldMapping`**:
+- `frontmatter_to_api` maps all cloud-mapped fields correctly
+- `frontmatter_to_api` strips Prism-specific fields (`voice`, `icon`, `role`, `capabilities`, `extra_context`)
+- `api_to_frontmatter` maps `system` -> markdown body
+- `api_to_frontmatter` maps `model: {id, speed}` -> `model` + `model_speed`
+- Round-trip: local -> API -> local preserves all cloud-mapped fields
+- Round-trip: Prism-specific fields are NOT present in the API payload
+
+**`TestCloudContentHash`**:
+- Same content -> same hash (deterministic)
+- Different `description` -> different hash
+- Different `model` -> different hash
+- Change to `voice` (Prism-specific) -> same hash (not included)
+- Change to `extra_context` (Prism-specific) -> same hash
+- Change to markdown body -> different hash (body is cloud-mapped)
+- Ordering of YAML fields doesn't affect hash (normalize before hashing)
+
+**`TestSyncRegistry`**:
+- Load from valid file -- returns parsed dict
+- Load from missing file -- returns empty dict (not error)
+- Save then load round-trip -- identical content
+- Save to directory without write permission -- raises error with context
+- Registry with `_environments` section preserved across load/save
+
+**`TestUpdateAgent`**:
+- Cloud version newer, no local edits -- silent update, all Prism-specific fields preserved
+- Cloud version newer, user edited `description` locally -- conflict detected, returns list of changed fields
+- `--force` flag -- overrides conflict without warning
+- Cloud version same as installed -- returns "already up to date", no file write
+- `voice`, `icon`, `extra_context` always preserved regardless of update
+
+**`TestScaffoldAgents`**:
+- `tech_stack="React web app"` -> matches "web", creates ux-reviewer + security-auditor + performance-analyst
+- `tech_stack="Unity game"` -> matches "game", creates game-designer + level-designer + narrative-writer
+- `tech_stack="FastAPI backend"` -> matches "api", creates api-designer + documentation-writer + test-engineer
+- `tech_stack="something unusual"` -> falls back to "default", creates code-reviewer only
+- Case insensitive matching: `"WEB APP"` matches "web"
+- All created files have valid YAML frontmatter (parseable)
+- All created files have non-empty markdown body
+- `agents/` directory created if it doesn't exist
+- Already-existing `agents/` directory -- files added without error
+
+**`TestEnvironment`**:
+- Same requirements dict -> same fingerprint
+- Different requirements -> different fingerprint
+- None/empty requirements -> consistent fallback fingerprint
+- `create_or_reuse_environment` reuses existing env for same fingerprint
+- `create_or_reuse_environment` creates new env for new fingerprint
+- Environment name follows `{project}-{hash-prefix}` format
 
 ### Existing test updates
 
 - `TestScaffold` should verify that `scaffold_project` now creates an `agents/` directory with starter agents
+- Verify at least one `.md` file exists in the created `agents/` directory
 - Existing tests should not break -- new functionality is additive
+- Run full test suite (`python -m pytest tests/ -v`) to confirm no regressions
