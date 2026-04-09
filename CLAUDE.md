@@ -276,6 +276,21 @@ Test classes (one per concern):
 - Use `logging` for debug output, never `print()`.
 - Keep `forge.py` as a single file. No package structure.
 
+## Guest Agents (Planned)
+
+Forge gains CLI subcommands for managing guest agents in project `agents/` directories. These are lightweight persona definitions (markdown files with YAML frontmatter) that the Anthem orchestrator can speak through.
+
+Full implementation spec: `docs/guest-agents.md`
+
+Key Forge responsibilities:
+- `scaffold_agents_directory()`: create starter agents when scaffolding new projects (game, web, api presets)
+- `forge add <agent>`: install a cloud agent from Managed Agents registry into project `agents/`
+- `forge update <agent>`: update a cloud-sourced agent (with conflict detection for local edits)
+- `forge publish <agent>`: push a local agent to the cloud registry
+- `forge create <name>`: create a new agent (locally or on cloud)
+- Helper functions: parse/write agent files, field mapping (local <-> API), sync registry management
+- Per-requirement-profile environment auto-generation for cloud execution
+
 ## What Forge Does NOT Do (for now)
 
 - **Does not run `anthem run`** on the new project. The user starts it manually.
