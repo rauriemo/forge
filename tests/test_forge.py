@@ -634,7 +634,7 @@ class TestScaffoldAgents:
         forge.scaffold_agents_directory(str(tmp_path), "general")
         orch_path = tmp_path / "agents" / "orchestrator.md"
         assert orch_path.exists()
-        fm, body = forge.parse_agent_file(str(orch_path))
+        fm, _body = forge.parse_agent_file(str(orch_path))
         assert fm["role"] == "orchestrator"
         assert "name" in fm
 
