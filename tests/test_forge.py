@@ -587,25 +587,24 @@ class TestCloudContentHash:
 class TestScaffoldAgents:
     def test_game_stack(self, tmp_path):
         slugs = forge.scaffold_agents_directory(str(tmp_path), "Unity game")
-        assert slugs == ["game-designer", "level-designer", "narrative-writer"]
-        for s in slugs:
-            assert (tmp_path / "agents" / f"{s}.md").exists()
+        assert slugs == ["orchestrator"]
+        assert (tmp_path / "agents" / "orchestrator.md").exists()
 
     def test_web_stack(self, tmp_path):
         slugs = forge.scaffold_agents_directory(str(tmp_path), "React web app")
-        assert slugs == ["ux-reviewer", "security-auditor", "performance-analyst"]
+        assert slugs == ["orchestrator"]
 
     def test_api_stack(self, tmp_path):
         slugs = forge.scaffold_agents_directory(str(tmp_path), "FastAPI backend")
-        assert slugs == ["api-designer", "documentation-writer", "test-engineer"]
+        assert slugs == ["orchestrator"]
 
     def test_default_fallback(self, tmp_path):
         slugs = forge.scaffold_agents_directory(str(tmp_path), "something unusual")
-        assert slugs == ["code-reviewer"]
+        assert slugs == ["orchestrator"]
 
     def test_case_insensitive(self, tmp_path):
         slugs = forge.scaffold_agents_directory(str(tmp_path), "WEB APP")
-        assert slugs == ["ux-reviewer", "security-auditor", "performance-analyst"]
+        assert slugs == ["orchestrator"]
 
     def test_valid_yaml_frontmatter(self, tmp_path):
         forge.scaffold_agents_directory(str(tmp_path), "game")
@@ -628,8 +627,30 @@ class TestScaffoldAgents:
         (tmp_path / "agents").mkdir()
         (tmp_path / "agents" / "existing.md").write_text("kept", encoding="utf-8")
         slugs = forge.scaffold_agents_directory(str(tmp_path), "general")
-        assert slugs == ["code-reviewer"]
+        assert slugs == ["orchestrator"]
         assert (tmp_path / "agents" / "existing.md").read_text(encoding="utf-8") == "kept"
+
+    def test_scaffold_creates_orchestrator_md(self, tmp_path):
+        forge.scaffold_agents_directory(str(tmp_path), "general")
+        orch_path = tmp_path / "agents" / "orchestrator.md"
+        assert orch_path.exists()
+        fm, body = forge.parse_agent_file(str(orch_path))
+        assert fm["role"] == "orchestrator"
+        assert "name" in fm
+
+    def test_scaffold_orchestrator_has_project_name(self, tmp_path):
+        project_dir = tmp_path / "my-cool-project"
+        project_dir.mkdir()
+        forge.scaffold_agents_directory(str(project_dir), "general")
+        fm, _body = forge.parse_agent_file(str(project_dir / "agents" / "orchestrator.md"))
+        assert fm["name"] == "My Cool Project"
+
+    def test_scaffold_no_default_guest_agents(self, tmp_path):
+        forge.scaffold_agents_directory(str(tmp_path), "Unity game")
+        agents_dir = tmp_path / "agents"
+        md_files = list(agents_dir.glob("*.md"))
+        assert len(md_files) == 1
+        assert md_files[0].name == "orchestrator.md"
 
 
 class TestScaffold:
@@ -693,7 +714,11 @@ class TestScaffold:
 
         agents_dir = project_dir / "agents"
         assert agents_dir.is_dir()
-        assert any(agents_dir.glob("*.md"))
+        assert (agents_dir / "orchestrator.md").exists()
+
+        assert (project_dir / "CLAUDE.md").exists()
+        claude = (project_dir / "CLAUDE.md").read_text(encoding="utf-8")
+        assert "My Rpg" in claude
 
         assert any("git" in str(c) and "init" in str(c) for c in calls)
         assert any("anthem" in str(c) for c in calls)

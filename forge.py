@@ -260,6 +260,50 @@ Design tests that catch real bugs. Avoid testing implementation details.
 """,
 }
 
+ORCHESTRATOR_TEMPLATE = """\
+---
+name: {name}
+description: Project orchestrator and pair programmer
+role: orchestrator
+capabilities:
+  - task planning and decomposition
+  - code review and architecture
+  - project coordination
+---
+
+## Identity
+Name: {name}
+Role: Senior engineer and pair programmer
+Specialty: Pragmatic problem-solving, ships fast
+
+## Personality
+- Direct and opinionated. Skip pleasantries, get to the point.
+- Think out loud when explaining decisions.
+- Prefer shipping over perfection.
+
+## Your Focus
+Help the user build and ship. Coordinate with specialist agents when their expertise is needed.
+
+## Coordination
+You work with guest agents in the agents/ directory.
+Invite them when their specialty is relevant.
+You handle the orchestration; they handle their domain.
+"""
+
+CLAUDE_TEMPLATE = """\
+# {name}
+
+## Tech Stack
+{tech_stack}
+
+## Project Structure
+- `agents/` -- Agent definitions (orchestrator + specialist guests)
+- `WORKFLOW.md` -- Anthem workflow configuration
+
+## Coding Standards
+- (Add your project conventions here)
+"""
+
 CLOUD_MAPPED_FIELDS = {
     "name",
     "description",
@@ -330,30 +374,21 @@ def compute_cloud_content_hash(frontmatter: dict, body: str) -> str:
 
 
 def scaffold_agents_directory(project_dir: str, tech_stack: str) -> list[str]:
-    """Create agents/ directory with starter agent definitions.
+    """Create agents/ directory with orchestrator.md (project-named).
 
-    Matches tech_stack keywords via case-insensitive substring matching.
-    Falls back to "default" if no keyword matches.
+    No default guest agents are shipped -- user adds them as needed.
     Returns list of created agent slugs.
     """
     agents_dir = Path(project_dir) / "agents"
     agents_dir.mkdir(parents=True, exist_ok=True)
 
-    stack_lower = tech_stack.lower()
-    slugs = None
-    for keyword in ("game", "web", "api"):
-        if keyword in stack_lower:
-            slugs = STARTER_AGENTS[keyword]
-            break
-    if slugs is None:
-        slugs = STARTER_AGENTS["default"]
+    project_name = Path(project_dir).name
+    display_name = project_name.replace("-", " ").title()
+    orch_content = ORCHESTRATOR_TEMPLATE.format(name=display_name)
+    (agents_dir / "orchestrator.md").write_text(orch_content, encoding="utf-8")
 
-    for slug in slugs:
-        agent_path = agents_dir / f"{slug}.md"
-        agent_path.write_text(AGENT_TEMPLATES[slug], encoding="utf-8")
-
-    logger.info("Created %d starter agents in %s", len(slugs), agents_dir)
-    return list(slugs)
+    logger.info("Created orchestrator agent in %s", agents_dir)
+    return ["orchestrator"]
 
 
 # ---------------------------------------------------------------------------
@@ -760,6 +795,12 @@ def scaffold_project(
     )
     (project_dir / "WORKFLOW.md").write_text(workflow_content, encoding="utf-8")
     (project_dir / ".gitignore").write_text(GITIGNORE_CONTENT, encoding="utf-8")
+
+    claude_content = CLAUDE_TEMPLATE.format(
+        name=sanitized.replace("-", " ").title(),
+        tech_stack=tech_stack,
+    )
+    (project_dir / "CLAUDE.md").write_text(claude_content, encoding="utf-8")
 
     scaffold_agents_directory(str(project_dir), tech_stack)
 
