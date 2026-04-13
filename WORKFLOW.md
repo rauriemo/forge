@@ -21,7 +21,6 @@ channels:
   - kind: prism
     target: "localhost:3102"
     events: [task.completed, task.failed]
-
 agent:
   command: "claude"
   max_turns: 10
