@@ -21,6 +21,8 @@ channels:
   - kind: prism
     target: "localhost:3102"
     events: [task.completed, task.failed]
+  - kind: voice
+    target: "forge-voice"
 agent:
   command: "claude"
   max_turns: 10
